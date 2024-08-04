@@ -4,19 +4,24 @@ set -e
 # current branch feat/xxxx-xxxx
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-ENV_FOR_TAG="dev"
+ENV_FOR_TAG="dev" #dev is default
 
 LAST_MASTER_VERSION= #Last version on origin master, fetched from package.json 
 CURRENT_PROJECT_VERSION= #current version on current branch, fetched from package.json
 
+CHANGE_SIZE= 
+
 TAG_VERSION=
+# final tag version
 # Example dev: v2.0.0-feature-branch-name-dev-v1 
 # Example stage: v2.0.0-feature-branch-name-stage-v1
 # Example prod: v2.0.0
 
+CURRENT_IS_HIGHER_VERSION=
+
 CURRENT_VERSION_AND_MASTER_VERSION_ARE_EQUAL= # Boolean to check if master and current branch versions are equal
 
-TAG_VERSION_NUMBER= # Example: v2.0.0
+TAG_VERSION_NUMBER= # Defined version after bump version -> example: v2.0.0
 
 # Initialize the log flag
 enable_log=false
@@ -59,7 +64,7 @@ compareCurrentAndMasterVersions() {
 
         # Master might be 3.0.0 and current branch might be 2.4.1
         # In this case, compare all digits between; if master is greater in any, ask to update and merge master
-        compare_versions "$VERSION_CURRENT" "$VERSION_MASTER"
+        compare_versions "$VERSION_MASTER" "$VERSION_CURRENT" 
     else
         CURRENT_VERSION_AND_MASTER_VERSION_ARE_EQUAL=true
         echo "Your version is the same as the master version; you need to update it"
@@ -83,7 +88,7 @@ updateVersionHistoryMD() {
         return 
     fi
 
-    echo "Updating versionHistoryMD...\n"
+
     echo "We will update versionHistory.md with your inputs"
     echo "Please choose the type of code change you will introduce:"
     echo "1) Feature"
@@ -108,7 +113,7 @@ updateVersionHistoryMD() {
     echo "Please enter your message describing the change: \n"
     read -e -p "" _msg; printf '%s\n' "$_msg"
 
-    formatted_msg=$(echo "$_msg" | awk '{print toupper(substr($0, 1, 1)) tolower(substr($0, 2))}')
+    formatted_msg=$(echo "$_msg" | awk '{print toupper(substr($0, 1, 1)) substr($0, 2)}')
 
     USER_MESSAGE_VERSION="$type: $formatted_msg"
     log "Your version history message is: '$USER_MESSAGE_VERSION'"
@@ -129,6 +134,7 @@ updateVersionHistoryMD() {
     mv "$tempFile" versionHistory.md
 
     log "Running version patch to update package.json version and package-lock.json"
+    echo "Updating versionHistoryMD...\n"
 }
 
 getMasterPackageJsonVersion() {
@@ -141,8 +147,8 @@ getMasterPackageJsonVersion() {
     # Retrieve package.json from master branch
 
     echo "--------Switching to master to fetch package.json version--------"
-    git checkout master
-    git pull origin master
+    git checkout master > /dev/null 2>&1
+    git pull origin master > /dev/null 2>&1
 
     # Save the content of package.json in a variable
     PACKAGE_JSON_CONTENT=$(cat package.json)
@@ -154,7 +160,7 @@ getMasterPackageJsonVersion() {
     echo "Last master version: $LAST_MASTER_VERSION"
 
     log ""--------Switching back to your current branch"--------"
-    git checkout $CURRENT_BRANCH 
+    git checkout $CURRENT_BRANCH > /dev/null 2>&1
 }
 
 getCurrentVersionOfProject() {
@@ -163,41 +169,9 @@ getCurrentVersionOfProject() {
     CURRENT_PROJECT_VERSION=$(echo "$PACKAGE_JSON_CONTENT" | grep '"version"' | sed -E 's/.*"version": "([^"]+)".*/\1/')
 }
 
-bumpVersionBasedOnSizeOfChange() {
-    if [ "$CURRENT_VERSION_AND_MASTER_VERSION_ARE_EQUAL" == "false" ]; then
-        TAG_VERSION_NUMBER="$CURRENT_PROJECT_VERSION"
-        return
-    fi
 
-    echo "\n\nPlease choose the size of the change you will introduce:"
-    echo "1) Simple and small fix or feature"
-    echo "2) Significant feature with major changes" 
-    echo "3) Major change to the project"
 
-    read -e -p "Please enter the number: " _choice; printf '%s\n' "$_choice"
-
-    # Save new version into [TAG_VERSION_NUMBER]
-    case $_choice in
-        1)  
-            size="small"
-            bumpVersionNumber "$CURRENT_PROJECT_VERSION" "$size"
-            ;;
-        2)  
-            size="medium"
-            bumpVersionNumber "$CURRENT_PROJECT_VERSION" "$size"
-            ;;
-        3)
-            size="big"
-            bumpVersionNumber "$CURRENT_PROJECT_VERSION" "$size"
-            ;;
-        *)
-            echo "Invalid choice. Please run the script again and select either 1, 2, or 3."
-            exit 1
-            ;;
-    esac
-}
-
-commitBuildIdAndBumpVersion() {
+commitBuildIdAndPushTag() {
     echo "Committing Build ID, package.json, and versionHistory.md...\n"
     npm run buildId
     no_version_set=""
@@ -212,7 +186,7 @@ commitBuildIdAndBumpVersion() {
         commit_message="Generate build id and tag version"
     fi
 
-    git commit -m "$commit_message" $no_version_set && git push 
+    git commit -m "$commit_message" $no_version_set # && git push 
 }
 
 bumpVersionNumber() {
@@ -251,8 +225,8 @@ bumpVersionNumber() {
     fi
 
     TAG_VERSION_NUMBER="$new_version"
-    echo "NEW TAG VERSION CREATED!!: $TAG_VERSION_NUMBER \n"
-    # npm version 
+    echo "NEW VERSION CREATED BASED ON CHANGE SIZE!!: $TAG_VERSION_NUMBER \n"
+
 }
 
 askForEnvironmentVersion() {
@@ -283,6 +257,41 @@ askForEnvironmentVersion() {
     esac
 
 }
+
+
+askForSizeOfChange() {
+    if [ "$CURRENT_VERSION_AND_MASTER_VERSION_ARE_EQUAL" == "false" ]; then
+        #if are not equal so we skip the bump version because it's already updated
+        echo "Skip bump version because your version is already updated"
+        TAG_VERSION_NUMBER="$CURRENT_PROJECT_VERSION"
+        return
+    fi
+
+    echo "\n\nPlease choose the size of the change you will introduce:\n"
+    echo "1) Simple and small fix or feature"
+    echo "2) Significant feature with major changes"
+    echo "3) Major change to the project"
+
+    read -e -p "Enter the number of your choice (1, 2, or 3): " choice
+
+    # Save new version into [TAG_VERSION_NUMBER]
+    case $choice in
+        1)
+            CHANGE_SIZE="small"
+            ;;
+        2)
+            CHANGE_SIZE="medium"
+            ;;
+        3)
+            CHANGE_SIZE="big"
+            ;;
+        *)
+            echo "Invalid choice. Please run the script again and select either 1, 2, or 3."
+            exit 1
+            ;;
+    esac
+}
+
 
 generateCompleteTagBasedOnEnvironment() {
     echo "Generating complete tag based on environment...\n"
@@ -334,7 +343,8 @@ generateCompleteTagBasedOnEnvironment() {
         echo "Generating new tag for production environment"
         echo "Deploying to production server"
 
-        git tag $TAG_VERSION_NUMBER
+        TAG_VERSION="$TAG_VERSION_NUMBER"
+        printAndGenerateGitTag
     else
         echo "Unknown environment: $ENV_FOR_TAG"
         exit 1
@@ -379,28 +389,36 @@ updatePackageJson() {
 
 # Function to compare two numbers
 compare_numbers() {
+
+    echo "$1 master verison part"
+    echo "$2 current verison part"
     if [ "$1" -gt "$2" ]; then
-        echo "--------The master version is higher version. Please merge master and update your branch.--------"
+        echo "--------The master version is higher version. Please update your branch merging it with master.--------"
         exit 0
     elif [ "$1" -lt "$2" ]; then
-        echo "--------The current version is higher than master; no update needed--------."
-
+        CURRENT_IS_HIGHER_VERSION="true"
     fi
 }
 
 # Function to compare version changes
 compare_versions() {
     # Remove the prefix 'v'
-    local master_version=${1#v}
-    local current_version=${2#v}
+    master_version=${1#v}
+    current_version=${2#v}
 
     # Split the versions into arrays
-    IFS='.' read -r -a master_version_parts <<< "$LAST_MASTER_VERSION"
-    IFS='.' read -r -a current_version_parts <<< "$CURRENT_PROJECT_VERSION"
+    IFS='.' read -r -a master_version_parts <<< "$master_version"
+    IFS='.' read -r -a current_version_parts <<< "$current_version"
 
     for i in "${!master_version_parts[@]}"; do
-        compare_numbers "${master_version_parts[$i]}" "${current_version_parts[$i]}"
+            if [ "$CURRENT_IS_HIGHER_VERSION" == "true" ]; then
+                   echo "----Current version is already updated-----"
+                   return
+                else
+                    compare_numbers "${master_version_parts[$i]}" "${current_version_parts[$i]}"
+            fi
     done
+
 }
 
 printAllChanges() {
@@ -410,37 +428,50 @@ printAllChanges() {
 # Check if there are uncommitted changes
 checkIfHaveChanges
 
-# 0) Get the master version from master branch's package.json
+# Get the master version from master branch's package.json
 getMasterPackageJsonVersion
 
-# 1) Get the current version from package.json
+# Get the current version from package.json
 getCurrentVersionOfProject
 
-# 2) Compare versions and if they are equal, generate a version history
+# Compare versions and if they are equal, generate a version history
 compareCurrentAndMasterVersions "$CURRENT_PROJECT_VERSION" "$LAST_MASTER_VERSION"
 
-# 3) Print current and last master version
+#Print current and last master version
 echo "$CURRENT_PROJECT_VERSION CURRENT_PROJECT_VERSION"
 echo "$LAST_MASTER_VERSION LAST_MASTER_VERSION"
 
-# 4) Ask for environment to push
 askForEnvironmentVersion
 
-# 5) Generate version based on the size of change (small, medium, large) 
-# For instance, small changes are: 2.0.1 to 2.0.2 | medium changes are: 2.0.0 to 2.1.0 | large changes are: 2.0.0 to 3.0.0
-bumpVersionBasedOnSizeOfChange
 
-# 6) Update npm package version
-updatePackageJson "$TAG_VERSION_NUMBER"
+#If are equals versions between master and current branch, then bump version, update package.json and version history.
+if [ "$CURRENT_VERSION_AND_MASTER_VERSION_ARE_EQUAL" == "true" ]; then
 
-# 7) Update versionHistoryMD and package.json if necessary
-updateVersionHistoryMD
+    askForSizeOfChange
 
-# 8) Generate git tag name based on environment (dev|stage|prod)
+    # Generate version based on the size of change (small, medium, large) 
+    # For instance, small changes are: 2.0.1 to 2.0.2 | medium changes are: 2.0.0 to 2.1.0 | large changes are: 2.0.0 to 3.0.0
+    # [In case of equals versions between master and current branch generate a new version] 
+
+    bumpVersionNumber "$CURRENT_PROJECT_VERSION" "$CHANGE_SIZE"
+
+    updateVersionHistoryMD
+
+    updatePackageJson "$TAG_VERSION_NUMBER"
+
+    #Generate build ID, and commit changes (package json and version history) && create git tag and push it.
+    commitBuildIdAndPushTag
+
+    else
+    TAG_VERSION_NUMBER="v$CURRENT_PROJECT_VERSION"
+    #if are not equal so we skip the bump version because it's already updated
+    echo "Skip bump version because your version is already updated"
+fi
+
+
+#Generate git tag name based on environment (dev|stage|prod)
 generateCompleteTagBasedOnEnvironment
 
-# 9) Generate build ID
-commitBuildIdAndBumpVersion
-
-# 10) print success message saying all changes made.
+#Print success message saying all changes made.
 printAllChanges
+
